@@ -23,13 +23,6 @@ final class OrderModel extends Model
         self::STATUS_CANCELLED,
     ];
 
-    /**
-     * Bảng chuyển trạng thái hợp lệ:
-     * - Chờ xác nhận -> Đã xác nhận hoặc Đã hủy
-     * - Đã xác nhận -> Đang xử lý hoặc Đã hủy
-     * - Đang xử lý -> Hoàn thành
-     * - Hoàn thành / Đã hủy -> không thể đổi sang trạng thái khác
-     */
     private const ALLOWED_TRANSITIONS = [
         self::STATUS_PENDING    => [self::STATUS_CONFIRMED, self::STATUS_CANCELLED],
         self::STATUS_CONFIRMED  => [self::STATUS_PROCESSING, self::STATUS_CANCELLED],
@@ -38,13 +31,60 @@ final class OrderModel extends Model
         self::STATUS_CANCELLED  => [],
     ];
 
+    /**
+     * Chuẩn hóa chuỗi lý do: chỉ kiểm tra trim($value) === '' để chuỗi "0" vẫn hợp lệ.
+     */
     private function normalizeNonEmptyReason(string $reason, string $fieldLabel = 'Lý do hủy'): string
     {
         $clean = trim($reason);
         if ($clean === '') {
-            throw new InvalidArgumentException("{$fieldLabel} không được để trống hoặc chỉ chứa khoảng trắng.");
+            throw new InvalidArgumentException("{$fieldLabel} không được để trống.");
         }
+
         return $clean;
+    }
+
+    /**
+     * Kiểm tra đơn có yêu cầu hủy đang chờ xử lý hay không (không dùng empty() để không nhầm với "0").
+     */
+    private function hasPendingCancelRequest(array $order): bool
+    {
+        $req = $order['cancel_request'] ?? null;
+        return $req !== null && trim((string) $req) !== '';
+    }
+
+    /**
+     * Kiểm tra đầy đủ thông tin nhận hàng trực tiếp từ dữ liệu đặt hàng.
+     */
+    private function validateShippingInfo(array $orderData): array
+    {
+        $name = trim((string) ($orderData['customer_name'] ?? ''));
+        $email = trim((string) ($orderData['customer_email'] ?? ''));
+        $phone = preg_replace('/\s+/', '', trim((string) ($orderData['customer_phone'] ?? ''))) ?? '';
+        $address = trim((string) ($orderData['shipping_address'] ?? ''));
+
+        if ($name === '') {
+            throw new InvalidArgumentException('Vui lòng nhập tên người nhận.');
+        }
+
+        if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            throw new InvalidArgumentException('Vui lòng nhập email nhận hàng hợp lệ.');
+        }
+
+        if ($phone === '' || !preg_match('/^(0|\+84)[0-9]{8,10}$/', $phone)) {
+            throw new InvalidArgumentException('Vui lòng nhập số điện thoại nhận hàng hợp lệ.');
+        }
+
+        if ($address === '') {
+            throw new InvalidArgumentException('Vui lòng nhập địa chỉ nhận hàng.');
+        }
+
+        return [
+            'customer_name'    => $name,
+            'customer_email'   => $email,
+            'customer_phone'   => $phone,
+            'shipping_address' => $address,
+        ];
     }
 
     public function canTransition(string $currentStatus, string $newStatus): bool
@@ -52,6 +92,7 @@ final class OrderModel extends Model
         if (!isset(self::ALLOWED_TRANSITIONS[$currentStatus])) {
             return false;
         }
+
         return in_array($newStatus, self::ALLOWED_TRANSITIONS[$currentStatus], true);
     }
 
@@ -77,6 +118,7 @@ final class OrderModel extends Model
 
         $stmt = $this->db()->prepare($sql);
         $stmt->execute($params);
+
         return $stmt->fetchAll();
     }
 
@@ -94,6 +136,7 @@ final class OrderModel extends Model
 
         $stmt = $this->db()->prepare($sql);
         $stmt->execute($params);
+
         return $stmt->fetchAll();
     }
 
@@ -115,19 +158,15 @@ final class OrderModel extends Model
         return $row !== false ? $row : null;
     }
 
-    /**
-     * Tạo đơn hàng mới kèm chi tiết sản phẩm trong 1 Transaction.
-     * Tổng tiền được tính lại từ giá tin cậy của từng item và đồng bộ lại từ bảng order_details.
-     */
     public function createWithDetails(array $orderData, array $items): int
     {
         if ($items === []) {
-            throw new InvalidArgumentException('Không thể tạo đơn hàng rỗng.');
+            throw new InvalidArgumentException('Đơn hàng phải có ít nhất một sản phẩm.');
         }
 
+        $shipping = $this->validateShippingInfo($orderData);
         $detailModel = new OrderDetailModel();
 
-        // Validate toàn bộ item và tính tổng dự kiến trước khi mở transaction
         $computedTotal = 0.0;
         $normalizedItems = [];
         foreach ($items as $item) {
@@ -163,23 +202,23 @@ final class OrderModel extends Model
             $stmt->execute([
                 'order_code'       => $orderCode,
                 'user_id'          => $orderData['user_id'] ?? null,
-                'customer_email'   => trim((string) ($orderData['customer_email'] ?? '')),
-                'customer_name'    => trim((string) ($orderData['customer_name'] ?? '')),
-                'customer_phone'   => trim((string) ($orderData['customer_phone'] ?? '')),
-                'shipping_address' => trim((string) ($orderData['shipping_address'] ?? '')),
-                'note'             => isset($orderData['note']) ? trim((string) $orderData['note']) : null,
+                'customer_email'   => $shipping['customer_email'],
+                'customer_name'    => $shipping['customer_name'],
+                'customer_phone'   => $shipping['customer_phone'],
+                'shipping_address' => $shipping['shipping_address'],
+                'note'             => isset($orderData['note']) && trim((string) $orderData['note']) !== ''
+                    ? trim((string) $orderData['note'])
+                    : null,
                 'status'           => self::STATUS_PENDING,
                 'total_amount'     => $computedTotal,
             ]);
 
             $orderId = (int) $pdo->lastInsertId();
-
             $detailModel->insertMany($orderId, $normalizedItems);
 
-            // Đối chiếu lại tổng tiền trực tiếp từ order_details để đảm bảo khớp 100%
             $verifiedTotal = $detailModel->calculateOrderTotal($orderId);
             if ($verifiedTotal <= 0) {
-                throw new InvalidArgumentException('Tổng tiền đơn hàng sau khi lưu chi tiết không hợp lệ.');
+                throw new InvalidArgumentException('Tổng tiền đơn hàng không hợp lệ.');
             }
 
             $updateTotalStmt = $pdo->prepare('UPDATE orders SET total_amount = :total WHERE id = :id');
@@ -201,7 +240,7 @@ final class OrderModel extends Model
     public function advanceStatus(int $id): bool
     {
         $order = $this->findById($id);
-        if ($order === null || !empty($order['cancel_request'])) {
+        if ($order === null || $this->hasPendingCancelRequest($order)) {
             return false;
         }
 
@@ -219,9 +258,6 @@ final class OrderModel extends Model
         return $this->updateStatus($id, $nextMap[$current]);
     }
 
-    /**
-     * Chỉ cho phép chuyển trạng thái theo luồng hợp lệ đã định nghĩa trong ALLOWED_TRANSITIONS.
-     */
     public function updateStatus(int $id, string $newStatus): bool
     {
         if (!in_array($newStatus, self::ALL_STATUSES, true)) {
@@ -238,14 +274,14 @@ final class OrderModel extends Model
             return true;
         }
 
+        if ($this->hasPendingCancelRequest($order) && $newStatus !== self::STATUS_CANCELLED) {
+            return false;
+        }
+
         if (!$this->canTransition($currentStatus, $newStatus)) {
             throw new InvalidArgumentException(
                 "Không thể chuyển trạng thái đơn hàng từ '{$currentStatus}' sang '{$newStatus}'."
             );
-        }
-
-        if ($newStatus !== self::STATUS_CANCELLED && !empty($order['cancel_request'])) {
-            return false;
         }
 
         $completedAt = $newStatus === self::STATUS_COMPLETED ? date('Y-m-d H:i:s') : null;
@@ -266,12 +302,17 @@ final class OrderModel extends Model
 
     public function requestCancel(int $id, string $reason): bool
     {
-        $cleanReason = $this->normalizeNonEmptyReason($reason, 'Lý do yêu cầu hủy');
+        $cleanReason = $this->normalizeNonEmptyReason($reason, 'Lý do hủy');
+
+        $order = $this->findById($id);
+        if ($order === null || $order['status'] !== self::STATUS_PENDING || $this->hasPendingCancelRequest($order)) {
+            return false;
+        }
 
         $stmt = $this->db()->prepare(
             'UPDATE orders
              SET cancel_request = :reason
-             WHERE id = :id AND status = :status AND (cancel_request IS NULL OR TRIM(cancel_request) = \'\')'
+             WHERE id = :id AND status = :status'
         );
 
         $stmt->execute([
@@ -286,17 +327,11 @@ final class OrderModel extends Model
     public function resolveCancelRequest(int $id, bool $approve): bool
     {
         $order = $this->findById($id);
-        if ($order === null || $order['status'] !== self::STATUS_PENDING) {
+        if ($order === null || $order['status'] !== self::STATUS_PENDING || !$this->hasPendingCancelRequest($order)) {
             return false;
         }
 
-        $pendingReason = trim((string) ($order['cancel_request'] ?? ''));
-        if ($pendingReason === '') {
-            // Dọn sạch yêu cầu hủy rỗng/khoảng trắng bị kẹt nếu có
-            $cleanStmt = $this->db()->prepare('UPDATE orders SET cancel_request = NULL WHERE id = :id');
-            $cleanStmt->execute(['id' => $id]);
-            return false;
-        }
+        $pendingReason = trim((string) $order['cancel_request']);
 
         if ($approve) {
             $stmt = $this->db()->prepare(
@@ -306,6 +341,7 @@ final class OrderModel extends Model
                      cancel_request = NULL
                  WHERE id = :id'
             );
+
             return $stmt->execute([
                 'status' => self::STATUS_CANCELLED,
                 'reason' => $pendingReason,
@@ -319,6 +355,7 @@ final class OrderModel extends Model
                  cancel_request = NULL
              WHERE id = :id'
         );
+
         return $stmt->execute([
             'rejection' => 'Cửa hàng không chấp nhận yêu cầu hủy.',
             'id'        => $id,
@@ -327,7 +364,7 @@ final class OrderModel extends Model
 
     public function adminCancel(int $id, string $reason): bool
     {
-        $cleanReason = $this->normalizeNonEmptyReason($reason, 'Lý do hủy đơn');
+        $cleanReason = $this->normalizeNonEmptyReason($reason, 'Lý do hủy');
 
         $stmt = $this->db()->prepare(
             'UPDATE orders

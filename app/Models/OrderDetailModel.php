@@ -5,10 +5,12 @@ namespace App\Models;
 
 use App\Core\Model;
 use InvalidArgumentException;
-use RuntimeException;
+use PDO;
 
 final class OrderDetailModel extends Model
 {
+    public const MAX_QUANTITY = 99;
+
     public function getByOrderId(int $orderId): array
     {
         $stmt = $this->db()->prepare(
@@ -20,77 +22,85 @@ final class OrderDetailModel extends Model
     }
 
     /**
-     * Lấy giá tin cậy từ bảng products trên server nếu có, fallback sang giá hợp lệ của item.
+     * Truy vấn sản phẩm từ bảng san_pham và trả về thông tin tin cậy từ server.
+     * Bắt buộc sản phẩm tồn tại trong san_pham; không fallback sang giá do client gửi.
      */
-    private function resolveTrustedUnitPrice(array $item): float
+    private function resolveProductFromDb(array $item): array
     {
-        $productId = (int) ($item['product_id'] ?? $item['id'] ?? 0);
-
-        if ($productId > 0) {
-            $stmt = $this->db()->prepare('SELECT price FROM products WHERE id = :id LIMIT 1');
-            $stmt->execute(['id' => $productId]);
-            $row = $stmt->fetch();
-
-            if ($row !== false && isset($row['price'])) {
-                $dbPrice = (float) $row['price'];
-                if ($dbPrice <= 0) {
-                    throw new RuntimeException("Giá sản phẩm #{$productId} trong cơ sở dữ liệu không hợp lệ.");
-                }
-                return $dbPrice;
-            }
+        $rawId = $item['product_id'] ?? $item['id'] ?? null;
+        if (filter_var($rawId, FILTER_VALIDATE_INT) === false || (int) $rawId <= 0) {
+            throw new InvalidArgumentException('Sản phẩm không tồn tại.');
         }
 
-        $rawPrice = $item['unit_price'] ?? $item['price'] ?? null;
-        if (!is_numeric($rawPrice)) {
+        $productId = (int) $rawId;
+        $stmt = $this->db()->prepare('SELECT * FROM san_pham WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $productId]);
+        $product = $stmt->fetch();
+
+        if (!is_array($product) || $product === []) {
+            throw new InvalidArgumentException('Sản phẩm không tồn tại.');
+        }
+
+        $rawPrice = $product['gia'] ?? $product['price'] ?? $product['unit_price'] ?? null;
+        if (!is_numeric($rawPrice) || (float) $rawPrice <= 0) {
             throw new InvalidArgumentException('Giá sản phẩm không hợp lệ.');
         }
 
-        $price = (float) $rawPrice;
-        if ($price <= 0) {
-            throw new InvalidArgumentException('Giá sản phẩm phải lớn hơn 0.');
+        $name = trim((string) (
+            $product['ten_san_pham']
+            ?? $product['name']
+            ?? $product['title']
+            ?? $item['product_name']
+            ?? $item['name']
+            ?? ''
+        ));
+
+        if ($name === '') {
+            throw new InvalidArgumentException('Sản phẩm không tồn tại.');
         }
 
-        return $price;
+        $sku = $product['ma_san_pham'] ?? $product['sku'] ?? $item['product_sku'] ?? $item['sku'] ?? null;
+        $image = $product['hinh_anh'] ?? $product['image'] ?? $item['product_image'] ?? $item['image'] ?? null;
+
+        return [
+            'product_id'    => $productId,
+            'product_sku'   => $sku !== null && trim((string) $sku) !== '' ? trim((string) $sku) : null,
+            'product_name'  => $name,
+            'product_image' => $image !== null && trim((string) $image) !== '' ? trim((string) $image) : null,
+            'unit_price'    => round((float) $rawPrice, 2),
+        ];
     }
 
     /**
-     * Validate và chuẩn hóa 1 dòng sản phẩm trước khi lưu.
+     * Kiểm tra và chuẩn hóa 1 dòng sản phẩm trước khi lưu.
      */
     public function normalizeItem(array $item): array
     {
         $rawQty = $item['quantity'] ?? $item['qty'] ?? null;
         if (filter_var($rawQty, FILTER_VALIDATE_INT) === false) {
-            throw new InvalidArgumentException('Số lượng sản phẩm phải là số nguyên.');
+            throw new InvalidArgumentException('Số lượng sản phẩm không hợp lệ.');
         }
 
         $qty = (int) $rawQty;
-        if ($qty <= 0) {
-            throw new InvalidArgumentException('Số lượng sản phẩm phải lớn hơn 0.');
+        if ($qty <= 0 || $qty > self::MAX_QUANTITY) {
+            throw new InvalidArgumentException('Số lượng sản phẩm không hợp lệ (chỉ từ 1 đến ' . self::MAX_QUANTITY . ').');
         }
 
-        $unitPrice = $this->resolveTrustedUnitPrice($item);
+        $product = $this->resolveProductFromDb($item);
+        $unitPrice = $product['unit_price'];
         $subtotal = round($unitPrice * $qty, 2);
 
         if ($subtotal <= 0) {
-            throw new InvalidArgumentException('Thành tiền dòng sản phẩm không hợp lệ.');
-        }
-
-        $productName = trim((string) ($item['product_name'] ?? $item['name'] ?? ''));
-        if ($productName === '') {
-            throw new InvalidArgumentException('Tên sản phẩm không được để trống.');
+            throw new InvalidArgumentException('Thành tiền không hợp lệ.');
         }
 
         return [
-            'product_id'    => (int) ($item['product_id'] ?? $item['id'] ?? 0),
-            'product_sku'   => isset($item['product_sku']) || isset($item['sku'])
-                ? trim((string) ($item['product_sku'] ?? $item['sku']))
-                : null,
-            'product_name'  => $productName,
-            'product_image' => isset($item['product_image']) || isset($item['image'])
-                ? trim((string) ($item['product_image'] ?? $item['image']))
-                : null,
-            'color'         => trim((string) ($item['color'] ?? '')),
-            'size'          => trim((string) ($item['size'] ?? '')),
+            'product_id'    => $product['product_id'],
+            'product_sku'   => $product['product_sku'],
+            'product_name'  => $product['product_name'],
+            'product_image' => $product['product_image'],
+            'color'         => trim((string) ($item['color'] ?? $item['mau_sac'] ?? '')),
+            'size'          => trim((string) ($item['size'] ?? $item['kich_co'] ?? '')),
             'unit_price'    => $unitPrice,
             'quantity'      => $qty,
             'subtotal'      => $subtotal,
@@ -100,7 +110,7 @@ final class OrderDetailModel extends Model
     public function create(int $orderId, array $item): int
     {
         if ($orderId <= 0) {
-            throw new InvalidArgumentException('Mã đơn hàng không hợp lệ.');
+            throw new InvalidArgumentException('Đơn hàng không hợp lệ.');
         }
 
         $normalized = $this->normalizeItem($item);
@@ -131,9 +141,6 @@ final class OrderDetailModel extends Model
         return (int) $this->db()->lastInsertId();
     }
 
-    /**
-     * Lưu danh sách sản phẩm và trả về tổng tiền thực tế đã tính từ server.
-     */
     public function insertMany(int $orderId, array $items): float
     {
         if ($items === []) {
@@ -143,7 +150,7 @@ final class OrderDetailModel extends Model
         $total = 0.0;
         foreach ($items as $item) {
             if (!is_array($item)) {
-                throw new InvalidArgumentException('Dữ liệu sản phẩm trong đơn không hợp lệ.');
+                throw new InvalidArgumentException('Dữ liệu sản phẩm không hợp lệ.');
             }
             $normalized = $this->normalizeItem($item);
             $this->create($orderId, $normalized);
@@ -185,7 +192,7 @@ final class OrderDetailModel extends Model
         );
 
         $stmt->bindValue(':completed_status', OrderModel::STATUS_COMPLETED);
-        $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
 
         return $stmt->fetchAll();
