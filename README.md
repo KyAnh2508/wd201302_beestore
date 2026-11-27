@@ -11,7 +11,11 @@ mysql -u root -p < database/schema.sql
 php -S localhost:8000 -t public public/index.php
 ```
 
-Mở http://localhost:8000. Trang chủ không cần DB để hiển thị. Kiểm tra DB riêng:
+Mở http://localhost:8000 để xem giao diện Bee Store. Admin tại http://localhost:8000/#/admin/products.
+
+Giao diện gồm cửa hàng, sản phẩm, giỏ hàng, đơn hàng và admin. Size/màu được sửa trực tiếp trong form sản phẩm; không quản lý tồn kho hoặc đơn vị vận chuyển, không tính phí ship. Đơn hàng đi qua Chờ xác nhận → Đã xác nhận → Đang xử lý → Hoàn thành (hoặc Đã hủy).
+
+Đây là giao diện thử: dữ liệu lưu trong localStorage của trình duyệt, chưa nối các thao tác admin với PDO và chưa có xác thực/phân quyền máy chủ. Trang chủ không cần DB để hiển thị. Kiểm tra DB riêng:
 
 ```sh
 php scripts/check-db.php
