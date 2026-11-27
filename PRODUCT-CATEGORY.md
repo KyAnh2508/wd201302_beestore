@@ -1,8 +1,13 @@
 # ProductModel và CategoryModel — phần Nguyễn Dũng
 
-Hai model kế thừa `App\Models\BaseModel` ở PR #1 (nhánh `ky-anh`).
-Merge BaseModel trước hoặc cùng PR này. Không cần Composer.
+Hai model kế thừa `App\Models\BaseModel`. Bản này đã kèm nguyên BaseModel
+từ nhánh `ky-anh` trong `app/Models/BaseModel.php`, nên không cần lấy file
+từ nhánh khác trước khi sử dụng. Không cần Composer.
 PHP 8.1+, extension `pdo_mysql` và `mbstring`.
+
+Copy `.env.example` thành `.env`, sửa kết nối DB rồi import hai file SQL
+bên dưới. Chạy `php scripts/check-db.php` để kiểm tra kết nối và
+`php -S localhost:8000 -t public public/index.php` để mở giao diện.
 
 ## Database
 
@@ -39,7 +44,6 @@ $id = $products->create([
     'ma_san_pham' => 'BEE001',
     'ten_san_pham' => 'Áo polo',
     'gia_san_pham' => 249000,
-    'so_luong_kho' => 20,
     'trang_thai' => 'hien',
 ]);
 $products->update($id, ['gia_san_pham' => 229000]);
@@ -49,8 +53,9 @@ $products->update($id, ['trang_thai' => 'an']);
 CRUD dùng chung: `all`, `findById`, `findBy`, `firstBy`, `create`, `update`, `delete`.
 `all` và `findById` đọc cả bản ghi ẩn, dành cho admin. Controller phải kiểm tra quyền
 trước khi cho sử dụng chức năng admin. Phía cửa hàng dùng `getAll`, `getByCategory`,
-`findVisibleById`. Giá chấp nhận từ 0 đến 9999999999.99; số lượng kho là số nguyên
-không âm. Mã sản phẩm và tên danh mục là duy nhất. Danh mục đang có sản phẩm
+`findVisibleById`. Giá chấp nhận từ 0 đến 9999999999.99. Trường `so_luong_kho`
+cũ được giữ để tương thích dữ liệu, không có chức năng quản lý kho hay vận chuyển.
+Mã sản phẩm và tên danh mục là duy nhất. Danh mục đang có sản phẩm
 không được xóa; có thể ẩn bằng `update`.
 
 ## Kiểm tra
@@ -59,11 +64,20 @@ không được xóa; có thể ẩn bằng `update`.
 php -l app/Models/ProductModel.php
 php -l app/Models/CategoryModel.php
 php -d extension=pdo_sqlite scripts/test-product-category.php
+# Dùng database MySQL/MariaDB tạm, kiểm tra cả DDL thực tế:
+php scripts/test-product-category.php --mysql
 ```
 
 Test dùng SQLite in-memory để kiểm tra CRUD, tìm kiếm, lọc, bản ghi ẩn, dữ liệu sai,
 SQL injection và khóa ngoại, không sửa dữ liệu ứng dụng. Test này không thay thế
 việc import DDL và kiểm tra tích hợp trên MySQL với database chính thức của nhóm.
+Chế độ `--mysql` dùng TEST_DB_HOST/PORT/USER/PASS (mặc định 127.0.0.1:3306,
+root, mật khẩu rỗng), tạo database tên ngẫu nhiên `beestore_product_test_*`,
+import SQL thật và tự xóa database test sau khi kết thúc. Tài khoản test cần
+quyền CREATE/DROP DATABASE. Không dùng DB_NAME ứng dụng để lưu dữ liệu test.
+
+Bản này đã chạy đạt 33/33 kiểm tra trên SQLite in-memory và 33/33 trên
+MariaDB 11.4.5 với PDO MySQL/native prepared statements. Chưa xác nhận MySQL 8.
 
 Giao diện hiện tại vẫn dùng localStorage; việc nối controller/API và View tới
 hai model là bước tích hợp tiếp theo, không nằm trong hai file model này.
