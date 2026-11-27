@@ -95,5 +95,4 @@ $products->delete($cap);
 check($products->findById($cap) === null, 'Xóa sản phẩm');
 $categories->delete($hats);
 check($categories->findById($hats) === null, 'Xóa danh mục trống');
-
 echo "\n{$checks} checks passed (SQLite in-memory; chưa xác nhận DDL trên MySQL).\n";
