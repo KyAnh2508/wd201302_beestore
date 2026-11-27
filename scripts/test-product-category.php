@@ -1,17 +1,41 @@
 <?php
 declare(strict_types=1);
 
-// Kiểm tra độc lập bằng SQLite in-memory; không đụng database của ứng dụng.
+// SQLite in-memory hoặc --mysql với database tạm riêng.
 require dirname(__DIR__) . '/bootstrap.php';
 
 use App\Core\Database;
 use App\Models\CategoryModel;
 use App\Models\ProductModel;
 
-$pdo = new PDO('sqlite::memory:', null, null, [
+$options = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-]);
+];
+$engine = 'SQLite in-memory';
+if (in_array('--mysql', $argv, true)) {
+    $host = getenv('TEST_DB_HOST') ?: '127.0.0.1';
+    $port = getenv('TEST_DB_PORT') ?: '3306';
+    if (!preg_match('/^[a-zA-Z0-9.:-]+$/D', $host) || !ctype_digit($port)) {
+        throw new RuntimeException('TEST_DB_HOST/PORT không hợp lệ.');
+    }
+    $pdo = new PDO("mysql:host={$host};port={$port};charset=utf8mb4",
+        getenv('TEST_DB_USER') ?: 'root', getenv('TEST_DB_PASS') ?: '',
+        $options + [PDO::ATTR_EMULATE_PREPARES => false]);
+    $pdo->exec("SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'");
+    $testName = 'beestore_product_test_' . bin2hex(random_bytes(8));
+    register_shutdown_function(static function () use ($pdo, $testName): void {
+        if (preg_match('/^beestore_product_test_[a-f0-9]{16}$/D', $testName)) {
+            $pdo->exec("DROP DATABASE IF EXISTS `{$testName}`");
+        }
+    });
+    foreach (['schema.sql', 'product-category.sql'] as $file) {
+        $pdo->exec(str_replace('website_ban_quan_ao', $testName,
+            file_get_contents(BASE_PATH . '/database/' . $file)));
+    }
+    $engine = 'PDO MySQL / ' . $pdo->query('SELECT VERSION()')->fetchColumn();
+} else {
+$pdo = new PDO('sqlite::memory:', null, null, $options);
 $pdo->exec('PRAGMA foreign_keys = ON');
 $pdo->exec("CREATE TABLE danh_muc (
     id_danh_muc INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,6 +50,7 @@ $pdo->exec("CREATE TABLE san_pham (
     so_luong_kho INTEGER NOT NULL DEFAULT 0 CHECK(so_luong_kho >= 0),
     trang_thai TEXT NOT NULL DEFAULT 'hien'
 )");
+}
 (new ReflectionProperty(Database::class, 'connection'))->setValue(null, $pdo);
 
 $checks = 0;
@@ -95,4 +120,4 @@ $products->delete($cap);
 check($products->findById($cap) === null, 'Xóa sản phẩm');
 $categories->delete($hats);
 check($categories->findById($hats) === null, 'Xóa danh mục trống');
-echo "\n{$checks} checks passed (SQLite in-memory; chưa xác nhận DDL trên MySQL).\n";
+echo "\n{$checks} checks passed ({$engine}).\n";
