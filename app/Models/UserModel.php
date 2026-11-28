@@ -32,9 +32,10 @@ final class UserModel
 
     public static function register(string $name, string $email, string $password): int
     {
+        self::validatePasswordLength($password);
         $name = self::normalizeName($name);
         $email = strtolower(trim($email));
-        if (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($password) < 8) {
+        if (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new DomainException('Thông tin đăng ký không hợp lệ.');
         }
 
@@ -112,12 +113,13 @@ final class UserModel
 
     public static function changePassword(int $uid, string $old, string $new): void
     {
+        self::validatePasswordLength($new);
         $db = Database::connection();
         $query = $db->prepare('SELECT mat_khau_hash FROM nguoi_dung WHERE id_nguoi_dung = ?');
         $query->execute([$uid]);
         $hash = $query->fetchColumn();
-        if ($hash === false || !password_verify($old, $hash) || strlen($new) < 8) {
-            throw new DomainException('Mật khẩu cũ hoặc mới không hợp lệ.');
+        if ($hash === false || !password_verify($old, $hash)) {
+            throw new DomainException('Mật khẩu cũ không hợp lệ.');
         }
 
         $query = $db->prepare(
@@ -126,6 +128,14 @@ final class UserModel
         $query->execute([password_hash($new, PASSWORD_DEFAULT), $uid, $hash]);
         if ($query->rowCount() === 0) {
             throw new DomainException('Mật khẩu đã thay đổi. Vui lòng thử lại.');
+        }
+    }
+
+    private static function validatePasswordLength(string $password): void
+    {
+        $length = strlen($password);
+        if ($length < 8 || $length > 72) {
+            throw new DomainException('Mật khẩu phải từ 8 đến 72 byte.');
         }
     }
 }
