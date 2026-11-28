@@ -22,18 +22,18 @@ final class OrderDetailModel extends Model
     }
 
     /**
-     * Truy vấn sản phẩm từ bảng san_pham và trả về thông tin tin cậy từ server.
-     * Bắt buộc sản phẩm tồn tại trong san_pham; không fallback sang giá do client gửi.
+     * Truy vấn sản phẩm từ bảng san_pham theo id_san_pham và đọc giá từ gia_san_pham.
+     * Bắt buộc sản phẩm tồn tại trong san_pham; không lấy giá từ dữ liệu client gửi lên.
      */
     private function resolveProductFromDb(array $item): array
     {
-        $rawId = $item['product_id'] ?? $item['id'] ?? null;
+        $rawId = $item['product_id'] ?? $item['id_san_pham'] ?? $item['id'] ?? null;
         if (filter_var($rawId, FILTER_VALIDATE_INT) === false || (int) $rawId <= 0) {
             throw new InvalidArgumentException('Sản phẩm không tồn tại.');
         }
 
         $productId = (int) $rawId;
-        $stmt = $this->db()->prepare('SELECT * FROM san_pham WHERE id = :id LIMIT 1');
+        $stmt = $this->db()->prepare('SELECT * FROM san_pham WHERE id_san_pham = :id LIMIT 1');
         $stmt->execute(['id' => $productId]);
         $product = $stmt->fetch();
 
@@ -41,7 +41,12 @@ final class OrderDetailModel extends Model
             throw new InvalidArgumentException('Sản phẩm không tồn tại.');
         }
 
-        $rawPrice = $product['gia'] ?? $product['price'] ?? $product['unit_price'] ?? null;
+        $rawPrice = $product['gia_san_pham']
+            ?? $product['gia']
+            ?? $product['price']
+            ?? $product['unit_price']
+            ?? null;
+
         if (!is_numeric($rawPrice) || (float) $rawPrice <= 0) {
             throw new InvalidArgumentException('Giá sản phẩm không hợp lệ.');
         }
