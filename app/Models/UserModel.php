@@ -8,6 +8,9 @@ use DomainException;
 
 final class UserModel
 {
+    private const MAX_NAME_LENGTH = 100;
+    private const MAX_ADDRESS_LENGTH = 255;
+
     public static function byEmail(string $email): ?array
     {
         $query = Database::connection()->prepare(
@@ -29,9 +32,9 @@ final class UserModel
 
     public static function register(string $name, string $email, string $password): int
     {
-        $name = trim($name);
+        $name = self::normalizeName($name);
         $email = strtolower(trim($email));
-        if (mb_strlen($name, 'UTF-8') < 2 || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($password) < 8) {
+        if (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($password) < 8) {
             throw new DomainException('Thông tin đăng ký không hợp lệ.');
         }
 
@@ -62,9 +65,49 @@ final class UserModel
             return false;
         }
 
+        if (array_key_exists('ho_ten', $fields)) {
+            $fields['ho_ten'] = self::normalizeName($fields['ho_ten']);
+        }
+        if (array_key_exists('sdt', $fields)) {
+            $phone = self::normalizeProfileText($fields['sdt']);
+            if ($phone !== null && !preg_match('/\A(?:0|\+84)[0-9]{8,10}\z/', $phone)) {
+                throw new DomainException('Số điện thoại không đúng định dạng.');
+            }
+            $fields['sdt'] = $phone;
+        }
+        if (array_key_exists('dia_chi_mac_dinh', $fields)) {
+            $address = self::normalizeProfileText($fields['dia_chi_mac_dinh']);
+            if ($address !== null && mb_strlen($address, 'UTF-8') > self::MAX_ADDRESS_LENGTH) {
+                throw new DomainException('Địa chỉ tối đa 255 ký tự.');
+            }
+            $fields['dia_chi_mac_dinh'] = $address;
+        }
+
         $assignments = implode(', ', array_map(static fn (string $field): string => "$field = ?", array_keys($fields)));
         $query = Database::connection()->prepare("UPDATE nguoi_dung SET $assignments WHERE id_nguoi_dung = ?");
         return $query->execute([...array_values($fields), $uid]);
+    }
+
+    private static function normalizeName(mixed $value): string
+    {
+        $name = self::normalizeProfileText($value);
+        $length = $name === null ? 0 : mb_strlen($name, 'UTF-8');
+        if ($length < 2 || $length > self::MAX_NAME_LENGTH) {
+            throw new DomainException('Họ tên phải có từ 2 đến 100 ký tự.');
+        }
+        return $name;
+    }
+
+    private static function normalizeProfileText(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        $trimmed = is_string($value) ? preg_replace('/\A\s+|\s+\z/u', '', $value) : null;
+        if ($trimmed === null) {
+            throw new DomainException('Thông tin hồ sơ không hợp lệ.');
+        }
+        return $trimmed === '' ? null : $trimmed;
     }
 
     public static function changePassword(int $uid, string $old, string $new): void
